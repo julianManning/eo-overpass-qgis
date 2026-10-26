@@ -1,0 +1,21 @@
+[general]
+name=EO Overpass Predictor
+qgisMinimumVersion=3.34
+qgisMaximumVersion=4.99
+supportsQt6=True
+description=When will Landsat 8/9 or Sentinel-2 image my site? Swath-aware overpass prediction with local times, ESA plan cross-check, field packs and a live tracker.
+about=Predicts when Landsat 8/9 and Sentinel-2A/B/C will image a region of interest. SGP4 orbits from CelesTrak TLEs; the instrument swath (MSI 290 km, OLI 185 km) is built with WGS84 geodesics and intersected with the ROI in an ROI-centred equal-area projection, giving ROI coverage %, entry/exit and scene-centre times, view angle and sun elevation, reported in UTC and the ROI's local time (DST-aware). Sentinel-2 passes can be cross-checked against ESA's published acquisition plans. Exports a CSV report, a standalone live-tracker web page and printable PNGs (pass timeline, A4 field sheet, orbit globe). Includes a live tracker dock (positions, ground tracks, current swaths, night side). Processing algorithms work in the Graphical Modeler, batch mode and qgis_process. No account or API key needed; pure-Python dependencies (sgp4, geographiclib, tzdata) are bundled. Validated against delivered Landsat and Sentinel-2 acquisition times (~1 s with fresh TLEs). Companion notebook toolkit: https://github.com/julianManning/eo-overpass-predictor
+version=0.3.0
+author=Julian Manning
+email=julian.manning@outlook.com
+homepage=https://github.com/julianManning/eo-overpass-qgis
+tracker=https://github.com/julianManning/eo-overpass-qgis/issues
+repository=https://github.com/julianManning/eo-overpass-qgis
+category=Analysis
+icon=icon.png
+tags=landsat,sentinel-2,satellite,overpass,orbit,tle,sgp4,remote sensing,earth observation,acquisition planning,field work,processing
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+server=False
+changelog=0.3.0 First public release: Predict overpasses, ESA plan cross-check, field pack export (CSV, HTML tracker, timeline / field sheet / orbit globe PNGs), TLE refresh, live tracker dock.

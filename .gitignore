@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+dist/
+.ipynb_checkpoints/
+.vscode/
