@@ -1,14 +1,12 @@
 <title>__TITLE__</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
 /* Layout: a ground-station console — the orbital chart fills the left, a narrow telemetry rail runs on the right (stacks below on phones). */
 :root{
   --bg:#EDF1F2; --panel:#F8FAFA; --ink:#17232B; --muted:#5B6B74; --line:#CAD3D7;
   --ocean:#DAE5E9; --land:#BCC5BA; --coast:#A3AEA2; --grid:rgba(23,35,43,.10); --night:rgba(20,33,44,.20);
   --roi:#D7263D; --accent:#0B6E99; --now:#0B7A4B; --warn:#A35B00;
+  --note-bg:#FFF3CD; --note-fg:#664D03; --note-edge:#F0AD4E; --bad-bg:#FBE3E4; --bad-fg:#8A1C24; --bad-edge:#D7263D;
   --f-display:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;
   --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
@@ -16,17 +14,22 @@
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#0E161B; --panel:#131E24; --ink:#E2E9EB; --muted:#8C9EA7; --line:#24333B;
   --ocean:#0F1D25; --land:#28362F; --coast:#3A4A41; --grid:rgba(226,233,235,.07); --night:rgba(0,0,0,.42);
-  --roi:#FF5C70; --accent:#55B6DD; --now:#3FD08E; --warn:#F0A64A; color-scheme:dark }}
+  --roi:#FF5C70; --accent:#55B6DD; --now:#3FD08E; --warn:#F0A64A;
+  --note-bg:#3A2E0E; --note-fg:#F7D98A; --note-edge:#C9902B; --bad-bg:#40141A; --bad-fg:#FFB3BA; --bad-edge:#FF5C70; color-scheme:dark }}
 :root[data-theme="dark"]{
   --bg:#0E161B; --panel:#131E24; --ink:#E2E9EB; --muted:#8C9EA7; --line:#24333B;
   --ocean:#0F1D25; --land:#28362F; --coast:#3A4A41; --grid:rgba(226,233,235,.07); --night:rgba(0,0,0,.42);
-  --roi:#FF5C70; --accent:#55B6DD; --now:#3FD08E; --warn:#F0A64A; color-scheme:dark }
+  --roi:#FF5C70; --accent:#55B6DD; --now:#3FD08E; --warn:#F0A64A;
+  --note-bg:#3A2E0E; --note-fg:#F7D98A; --note-edge:#C9902B; --bad-bg:#40141A; --bad-fg:#FFB3BA; --bad-edge:#FF5C70; color-scheme:dark }
 html,body{height:100%}
 body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:14px;
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
   padding-block:12px;box-sizing:border-box}
 *{box-sizing:border-box}
-.app{height:100%;display:grid;grid-template-rows:auto 1fr;gap:12px;min-height:520px}
+.app{height:100%;display:grid;grid-template-rows:auto auto 1fr;gap:12px;min-height:520px}
+.validity{font-size:.82rem;line-height:1.45;padding:7px 12px;border:1px solid var(--note-edge);border-left-width:5px;background:var(--note-bg);color:var(--note-fg)}
+.validity.expired{border-color:var(--bad-edge);background:var(--bad-bg);color:var(--bad-fg)}
+.validity b{font-weight:600}
 header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;border-bottom:1px solid var(--line);padding-bottom:10px}
 h1{font-family:var(--f-display);font-weight:600;font-size:1.6rem;letter-spacing:.01em;margin:0;text-wrap:balance}
 .roi-tag{font-family:var(--f-mono);font-size:.8rem;color:var(--muted)}
@@ -86,6 +89,7 @@ footer .old{color:var(--warn)}
       <div class="clock"><span id="locLbl">ROI local</span><strong id="loc">--:--:--</strong></div>
     </div>
   </header>
+  <div class="validity" id="validity" role="status"></div>
   <main>
     <div class="chart" id="chart" aria-label="Map of satellite positions, ground tracks and swaths">
       <canvas id="cv"></canvas>
@@ -103,7 +107,7 @@ footer .old{color:var(--warn)}
   </main>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
+<script>/*__SATJS__*/</script>
 <script>
 "use strict";
 const P = /*__PAYLOAD__*/null;
@@ -363,7 +367,22 @@ function tick(){
   const parts = fmtLoc.formatToParts(now);
   document.getElementById("loc").textContent = parts.filter(p => ["hour","minute","second","literal"].includes(p.type)).map(p => p.value).join("").trim();
   document.getElementById("locLbl").textContent = "ROI local · " + (parts.find(p => p.type === "timeZoneName") || {}).value;
-  renderSats(now); renderPasses(now); renderFoot(now); draw();
+  renderSats(now); renderPasses(now); renderFoot(now); renderValidity(now); draw();
+}
+function renderValidity(now){
+  const el = document.getElementById("validity");
+  const gen = new Date(P.generated), until = new Date(P.valid_until || (gen.getTime() + 3 * 86400000));
+  const g = fmtLocDay.format(gen), u = fmtLocDay.format(until);
+  if (now > until){
+    el.className = "validity expired";
+    el.innerHTML = `⚠ <b>Expired.</b> These predictions were produced ${esc(g)} and were valid until ${esc(u)} (${esc(P.tz)}). ` +
+      `Re-run the prediction before relying on any pass time — orbits drift and ESA revises its acquisition plans.`;
+  } else {
+    const left = until - now, d = Math.floor(left / 86400000), h = Math.floor(left % 86400000 / 3600000);
+    el.className = "validity";
+    el.innerHTML = `⚠ Produced <b>${esc(g)}</b> · <b>re-run by ${esc(u)}</b> (${d} d ${h} h left) and again 1–2 days before field work. ` +
+      `Pass times are geometric predictions: acquisition is not guaranteed and cloud is not forecast.`;
+  }
 }
 readTheme();
 tick();

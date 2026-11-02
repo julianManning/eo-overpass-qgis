@@ -3,3 +3,9 @@ __pycache__/
 dist/
 .ipynb_checkpoints/
 .vscode/
+*.bak
+~$*
+*.prepatch
+*.tmp
+out/
+CLAUDE.md

@@ -32,9 +32,6 @@ class EOOverpassPlugin:
         icon = QIcon(ICON)
         entries = [
             ("Predict overpasses…", "eooverpass:predict_overpasses", True),
-            ("Cross-check Sentinel-2 acquisition plans…", "eooverpass:crosscheck_s2_plans", False),
-            ("Export field pack…", "eooverpass:export_field_pack", False),
-            ("Refresh orbital elements (TLEs)…", "eooverpass:refresh_tles", False),
         ]
         for text, alg_id, toolbar in entries:
             act = QAction(icon, text, self.iface.mainWindow())
@@ -43,13 +40,23 @@ class EOOverpassPlugin:
             if toolbar:
                 self.iface.addToolBarIcon(act)
             self.actions.append(act)
-        live = QAction(icon, "Live tracker", self.iface.mainWindow())
-        live.setCheckable(True)
-        live.toggled.connect(self._toggle_dock)
-        self.iface.addPluginToMenu(MENU, live)
-        self.iface.addToolBarIcon(live)
-        self.actions.append(live)
-        self.live_action = live
+        for text, theme_icon, slot in (("Help (user guide)", "/mActionHelpContents.svg", self._open_guide),
+                                       ("About", "/mActionHelpAbout.svg", self._about)):
+            ic = QgsApplication.getThemeIcon(theme_icon)
+            act = QAction(icon if ic.isNull() else ic, text, self.iface.mainWindow())
+            act.triggered.connect(slot)
+            self.iface.addPluginToMenu(MENU, act)
+            self.actions.append(act)
+
+    def _about(self):
+        from .about import AboutDialog
+        AboutDialog(self.iface.mainWindow(), open_guide=self._open_guide).exec()
+
+    def _open_guide(self):
+        from qgis.PyQt.QtCore import QUrl
+        from qgis.PyQt.QtGui import QDesktopServices
+        from .algorithms.predict_overpasses import guide_url
+        QDesktopServices.openUrl(QUrl(guide_url()))
 
     def _run(self, alg_id):
         import processing
@@ -60,10 +67,16 @@ class EOOverpassPlugin:
             from .live.dock import LiveTrackerDock
             self.dock = LiveTrackerDock(self.iface)
             self.iface.addDockWidget(_right_area(), self.dock)
-            self.dock.visibilityChanged.connect(lambda v: self.live_action.setChecked(v))
         self.dock.setVisible(on)
-        if not on:
+        if on:
+            self.dock.raise_()
+        else:
             self.dock.btn_live.setChecked(False)
+
+    def open_tracker(self):
+        """Called after Predict overpasses: show the dock for the ROI just predicted (paused until ▶ Live)."""
+        self._toggle_dock(True)
+        self.dock.open_for_last_roi()
 
     def unload(self):
         for act in self.actions:

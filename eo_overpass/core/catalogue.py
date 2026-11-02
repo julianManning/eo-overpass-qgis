@@ -14,7 +14,7 @@ SATELLITES = {
     "SENTINEL-2A": {
         "norad_id": 40697, "mission": "Sentinel-2", "sensor": "MSI", "swath_km": 290.0,
         "lat_limits": (-56.0, 82.8), "colour": "#76B7B2",
-        "note": "Extension campaign (to 31 Dec 2026): selected regions only — check the ESA plan.",
+        "note": "Extension phase: selected regions only — check the ESA plan.",
     },
     "SENTINEL-2B": {
         "norad_id": 42063, "mission": "Sentinel-2", "sensor": "MSI", "swath_km": 290.0,

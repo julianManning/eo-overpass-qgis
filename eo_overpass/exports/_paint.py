@@ -59,7 +59,77 @@ def new_image(w: int, h: int, fill=PAPER) -> QImage:
     return img
 
 
-def begin(img: QImage) -> QPainter:
+_badge = None
+
+
+def badge(p: QPainter, x, y, size):
+    """Draw the plugin badge (badge.png, rendered from icon.svg; Qt's SVG renderer ignores its clip paths)."""
+    global _badge
+    if _badge is None:
+        from pathlib import Path
+        _badge = QImage(str(Path(__file__).resolve().parents[1] / "badge.png"))
+    if not _badge.isNull():
+        p.drawImage(QRectF(x, y, size, size), _badge)
+
+
+class PdfTarget:
+    """A multi-page A4 PDF painted directly with QPainter: text and lines stay vector (sharp), only the map is a
+    raster. Painting a rasterised page into a PDF instead gives lossy, blurry text."""
+
+    def __init__(self, path, dpi=300, title="Overpass field sheet"):
+        from qgis.PyQt.QtCore import QMarginsF
+        from qgis.PyQt.QtGui import QPageLayout, QPageSize, QPdfWriter
+        self.w = QPdfWriter(str(path))
+        self.w.setPageSize(QPageSize(enum(QPageSize, "PageSizeId", "A4")))
+        self.w.setPageOrientation(enum(QPageLayout, "Orientation", "Portrait"))
+        self.w.setPageMargins(QMarginsF(0, 0, 0, 0))
+        self.w.setResolution(dpi)
+        self.w.setTitle(title)
+        self.w.setCreator("EO Overpass Predictor (QGIS)")
+        self.p = QPainter(self.w)
+        self.p.setRenderHint(ANTIALIAS, True)
+        self.p.setRenderHint(TEXT_AA, True)
+        self.p.setRenderHint(SMOOTH, True)
+        self.n = 0
+
+    def page(self, w, h) -> QPainter:
+        """Start the next page; page units (pixels of a w-wide page) are scaled to the page width."""
+        if self.n:
+            self.w.newPage()
+        self.n += 1
+        self.p.resetTransform()
+        s = self.p.viewport().width() / w
+        self.p.scale(s, s)
+        self.p.fillRect(QRectF(0, 0, w, h), PAPER)
+        return self.p
+
+    def close(self):
+        self.p.end()
+
+
+class Canvas:
+    """A page to paint on: a QImage saved as PNG, or (target=PdfTarget) the next page of a PDF."""
+
+    def __init__(self, w, h, target=None, dpi=300):
+        self.w, self.h, self.target = int(w), int(h), target
+        if target is not None:
+            self.dev, self.p = None, target.page(w, h)
+        else:
+            self.dev = new_image(w, h)
+            self.dev.setDotsPerMeterX(int(dpi / 0.0254))
+            self.dev.setDotsPerMeterY(int(dpi / 0.0254))
+            self.p = begin(self.dev)
+
+    def finish(self, path=None):
+        """End painting; save the PNG when a path is given. Returns the QImage (None for a PDF page)."""
+        if self.target is None and self.p.isActive():
+            self.p.end()
+            if path is not None:
+                self.dev.save(str(path), "PNG")
+        return self.dev
+
+
+def begin(img) -> QPainter:
     p = QPainter(img)
     p.setRenderHint(ANTIALIAS, True)
     p.setRenderHint(TEXT_AA, True)
@@ -103,8 +173,33 @@ def caution_box(p: QPainter, x, y, w, title: str, items: list, px: float) -> flo
     return h
 
 
+def validity(passes: list, tz_name: str):
+    """(produced, re_run_by, expired) strings for the stamp, in the ROI's local time."""
+    import time as _t
+    from ..core.timezones import to_local
+    g = next((p.get("generated_utc") for p in passes if p.get("generated_utc")), None)
+    v = next((p.get("valid_until_utc") for p in passes if p.get("valid_until_utc")), None)
+    if g is None:
+        g = _t.time()
+    if v is None:
+        v = g + 3 * 86400
+
+    def f(t):
+        loc = to_local(t, tz_name)
+        return f"{loc:%a %d %b %Y %H:%M} {loc.tzname()}"
+    return f(g), f(v), _t.time() > v
+
+
+def field_cautions(passes: list, tz_name: str) -> list:
+    produced, rerun, expired = validity(passes, tz_name)
+    head = (f"EXPIRED — produced {produced}; it was valid until {rerun}. Re-run the prediction before using it."
+            if expired else
+            f"Produced {produced}. RE-RUN BY {rerun} (or 1–2 days before field work) — orbits drift and ESA revises plans.")
+    return [head] + FIELD_CAUTIONS
+
+
 FIELD_CAUTIONS = [
-    "Geometry shows the swath CAN image the site; acquisition is not guaranteed. Sentinel-2A (to 31 Dec 2026) images selected regions only.",
-    "Timing is to ~1 s with fresh TLEs. Re-run 1–2 days before field work; check the TLE age.",
+    "Geometry shows the swath CAN image the site; acquisition is not guaranteed. Sentinel-2A (extension phase) images selected regions only.",
+    "Timing is to ~1 s with fresh orbital elements (TLEs) and degrades as they age.",
     "Passes with edge margin within ±5 km of 0 are marginal. Cloud cover is not forecast.",
 ]

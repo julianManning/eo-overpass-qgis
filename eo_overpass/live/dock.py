@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 from qgis.core import (QgsApplication, QgsCategorizedSymbolRenderer, QgsCoordinateReferenceSystem,
-                       QgsCoordinateTransform, QgsFeature, QgsFillSymbol, QgsGeometry, QgsLineSymbol,
+                       QgsCoordinateTransform, QgsFeature, QgsFields, QgsFillSymbol, QgsGeometry, QgsLineSymbol,
                        QgsMarkerSymbol, QgsPalLayerSettings, QgsPointXY, QgsProject, QgsRendererCategory,
                        QgsTask, QgsTextBufferSettings, QgsTextFormat, QgsVectorLayer,
                        QgsVectorLayerSimpleLabeling)
@@ -14,7 +14,7 @@ from qgis.PyQt.QtGui import QColor
 from qgis.PyQt.QtWidgets import (QCheckBox, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSpinBox,
                                  QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ..algorithms.common import resolve_tz, tle_dir
+from ..algorithms.common import plan_dir, resolve_tz, tle_dir
 from ..core.catalogue import SATELLITES
 from ..core.compat import enum
 from ..core.geo import geod_direct, geod_inverse
@@ -24,6 +24,7 @@ from ..core.timezones import to_local
 from ..core.tle import fetch_tles
 
 GROUP = "EO Overpass — live"
+WINDOW_DAYS = 14                    # matches the website; longer means older TLEs
 
 
 def _split(lons, lats):
@@ -78,8 +79,18 @@ class _PassTask(QgsTask):
         try:
             from ..core.predict import predict_overpasses
             from ..core.records import enrich_local
+            t0 = time.time() - 600
             self.passes = [enrich_local(p) for p in predict_overpasses(
-                self.geom, self.dock.orbits, self.dock.tles, time.time() - 600, 10, tz_name=self.tz, roi_name=self.name)]
+                self.geom, self.dock.orbits, self.dock.tles, t0, WINDOW_DAYS, tz_name=self.tz, roi_name=self.name)]
+            try:    # Sentinel-2 imaging confirmation from ESA's plans; offline = cached KMLs only
+                from ..core.plans import crosscheck, fetch_plans, load_plans
+                try:
+                    fetch_plans(plan_dir(), t0, t0 + WINDOW_DAYS * 86400, log=lambda m: None)
+                except Exception:
+                    pass
+                crosscheck(self.passes, load_plans(plan_dir()), self.geom)
+            except Exception:
+                pass    # rows then show "—" for the plan column
             return True
         except Exception as exc:
             self.error = str(exc)
@@ -102,7 +113,7 @@ class LiveTrackerDock(QgsDockWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         row = QHBoxLayout()
-        row.addWidget(QLabel("ROI layer"))
+        row.addWidget(QLabel("ROI"))
         self.roi_combo = QgsMapLayerComboBox()
         try:
             from qgis.core import Qgis
@@ -111,12 +122,22 @@ class LiveTrackerDock(QgsDockWidget):
             from qgis.core import QgsMapLayerProxyModel
             self.roi_combo.setFilters(QgsMapLayerProxyModel.PolygonLayer | QgsMapLayerProxyModel.PointLayer)
         self.roi_combo.setAllowEmptyLayer(True)
+        self._hide_own_outputs()                    # Predict's Overpasses / Products layers are not ROIs
+        QgsProject.instance().layersAdded.connect(self._hide_own_outputs)
         row.addWidget(self.roi_combo, 1)
+        btn_file = QPushButton("…")
+        btn_file.setToolTip("Choose an ROI file (GeoPackage, shapefile, GeoJSON …) without adding it to the map")
+        btn_file.setMaximumWidth(32)
+        btn_file.clicked.connect(self._browse_roi)
+        row.addWidget(btn_file)
         self.btn_passes = QPushButton("Next passes")
-        self.btn_passes.setToolTip("Predict the next 10 days of imaging passes for the selected ROI layer")
+        self.btn_passes.setToolTip("Predict the next 14 days of imaging passes for the selected ROI layer")
         self.btn_passes.clicked.connect(self.compute_passes)
         row.addWidget(self.btn_passes)
         lay.addLayout(row)
+        self.roi_combo.layerChanged.connect(lambda *_: self._refresh_roi_note())
+        self._file_roi = None                   # (name, EPSG:4326 geometry) from the … button
+        self._refresh_roi_note()
 
         row2 = QHBoxLayout()
         self.chk = {}
@@ -128,7 +149,7 @@ class LiveTrackerDock(QgsDockWidget):
             self.chk[n] = cb
             row2.addWidget(cb)
         row2.addStretch(1)
-        row2.addWidget(QLabel("every"))
+        row2.addWidget(QLabel("Update every"))
         self.spin = QSpinBox()
         self.spin.setRange(1, 60)
         self.spin.setValue(2)
@@ -141,6 +162,20 @@ class LiveTrackerDock(QgsDockWidget):
         row2.addWidget(self.btn_live)
         lay.addLayout(row2)
 
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Basemap"))
+        from qgis.PyQt.QtWidgets import QComboBox
+        from ..core.basemaps import BASEMAP_NAMES, OFFLINE
+        self.basemap_combo = QComboBox()
+        self.basemap_combo.addItems(BASEMAP_NAMES + [OFFLINE])
+        self.basemap_combo.setCurrentText("Esri World Imagery")
+        row3.addWidget(self.basemap_combo, 1)
+        btn_bm = QPushButton("Add to map")
+        btn_bm.setToolTip("Add the selected basemap at the bottom of the layer list (the Natural Earth one works offline)")
+        btn_bm.clicked.connect(self._add_basemap)
+        row3.addWidget(btn_bm)
+        lay.addLayout(row3)
+
         self.clock = QLabel("—")
         self.clock.setStyleSheet("font-family: Consolas, monospace; font-size: 12px")
         lay.addWidget(self.clock)
@@ -150,10 +185,14 @@ class LiveTrackerDock(QgsDockWidget):
         self.table.horizontalHeader().setSectionResizeMode(enum(QHeaderView, "ResizeMode", "Stretch"))
         lay.addWidget(self.table)
         lay.addWidget(QLabel("<b>Next ROI overpasses</b> (press <i>Next passes</i>)"))
-        self.ptable = QTableWidget(0, 4)
-        self.ptable.setHorizontalHeaderLabels(["Satellite", "Countdown", "Local", "ROI %"])
+        heads = ["Satellite", "Countdown", "Local date / time", "UTC date / time", "ROI %", "Direction", "View °",
+                 "Will image?", "TLE age"]
+        self.ptable = QTableWidget(0, len(heads))
+        self.ptable.setHorizontalHeaderLabels(heads)
         self.ptable.verticalHeader().setVisible(False)
-        self.ptable.horizontalHeader().setSectionResizeMode(enum(QHeaderView, "ResizeMode", "Stretch"))
+        hdr = self.ptable.horizontalHeader()
+        for col in range(len(heads)):           # fit contents; the table scrolls sideways in a narrow dock
+            hdr.setSectionResizeMode(col, enum(QHeaderView, "ResizeMode", "ResizeToContents"))
         lay.addWidget(self.ptable, 1)
         self.status = QLabel("")
         self.status.setWordWrap(True)
@@ -163,6 +202,9 @@ class LiveTrackerDock(QgsDockWidget):
         lay.addWidget(self.status)
         self.setWidget(w)
 
+        self.idle = QTimer(self)                # keeps countdowns ticking while paused (tables only)
+        self.idle.setInterval(1000)
+        self.idle.timeout.connect(lambda: None if self.btn_live.isChecked() else self.update())
         self.timer = QTimer(self)
         self.timer.setInterval(2000)
         self.timer.timeout.connect(self.update)
@@ -171,6 +213,7 @@ class LiveTrackerDock(QgsDockWidget):
     def toggle(self, on):
         self.btn_live.setText("⏸ Pause" if on else "▶ Live")
         if on:
+            self._check_crs()
             if self.tles is None:
                 self._load_tles()
             else:
@@ -179,6 +222,59 @@ class LiveTrackerDock(QgsDockWidget):
                 self.timer.start()
         else:
             self.timer.stop()
+            self._restore_crs()
+
+    def _add_basemap(self):
+        from ..core.basemaps import add_basemap_to_project
+        name = self.basemap_combo.currentText()
+        if add_basemap_to_project(name) is None:
+            self.status.setText(f"Could not add {name} (check your network connection).")
+
+    # ---------------------------------------------------------------------------------------------
+    _GLOBAL_OK = {"EPSG:3857", "ESRI:54030", "EPSG:8857", "ESRI:54009", "ESRI:54042"}
+
+    def _check_crs(self):
+        """Orbits are global: offer to switch a local/projected map CRS (e.g. UTM) to WGS 84 while tracking."""
+        proj = QgsProject.instance()
+        crs = proj.crs()
+        if not crs.isValid() or crs.authid() in self._GLOBAL_OK or crs.authid() == "EPSG:4326":
+            return
+        from qgis.PyQt.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        box.setIcon(enum(QMessageBox, "Icon", "Question"))
+        box.setWindowTitle("EO Overpass — live tracker")
+        box.setText(f"The map is in <b>{crs.authid()}</b> ({crs.description()}).")
+        box.setInformativeText(
+            "Satellite orbits circle the whole Earth, so a local projection such as UTM distorts the tracks and "
+            "swaths badly. A national datum such as GDA2020 also makes QGIS warn about 'ballpark' transforms "
+            "when the global track layers are drawn.<br><br>Switch the map to <b>WGS 84 (EPSG:4326)</b> while the "
+            "tracker runs? "
+            f"{crs.authid()} is restored when you pause the tracker.")
+        yes = box.addButton("Switch to WGS 84", enum(QMessageBox, "ButtonRole", "AcceptRole"))
+        box.addButton("Keep " + crs.authid(), enum(QMessageBox, "ButtonRole", "RejectRole"))
+        box.setDefaultButton(yes)
+        box.exec() if hasattr(box, "exec") else box.exec_()
+        if box.clickedButton() is not yes:
+            return
+        self._previous_crs = crs
+        self._previous_extent = self.iface.mapCanvas().extent() if self.iface is not None else None
+        proj.setCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
+        if self.iface is not None:
+            from qgis.core import QgsRectangle
+            canvas = self.iface.mapCanvas()
+            canvas.setExtent(QgsRectangle(-180, -90, 180, 90))
+            canvas.refresh()
+
+    def _restore_crs(self):
+        prev = getattr(self, "_previous_crs", None)
+        if prev is None:
+            return
+        QgsProject.instance().setCrs(prev)
+        if self.iface is not None and getattr(self, "_previous_extent", None) is not None:
+            self.iface.mapCanvas().setExtent(self._previous_extent)
+            self.iface.mapCanvas().refresh()
+        self._previous_crs = None
+        self._previous_extent = None
 
     def _load_tles(self):
         self.clock.setText("Loading orbital elements …")
@@ -201,28 +297,100 @@ class LiveTrackerDock(QgsDockWidget):
             self.update(force_tracks=True)
             self.timer.start()
 
-    def compute_passes(self):
-        layer = self.roi_combo.currentLayer()
-        if layer is None:
-            self.status.setText("Select an ROI layer first.")
-            return
-        if self.tles is None:
-            self._pending_passes = True
-            self._load_tles()
-            return
+    def _hide_own_outputs(self, *_):
+        # Predict's outputs and this dock's own live layers are not ROIs
+        self.roi_combo.setExceptedLayerList([
+            l for l in QgsProject.instance().mapLayers().values()
+            if isinstance(l, QgsVectorLayer) and ("overpass_utc" in l.fields().names() or l.customProperty("eo_live"))])
+
+    @staticmethod
+    def _layer_roi(layer):
+        """(name, EPSG:4326 geometry) of a polygon/point layer, or None if it has no geometry."""
         ct = QgsCoordinateTransform(layer.crs(), QgsCoordinateReferenceSystem("EPSG:4326"), QgsProject.instance())
+        ct.setBallparkTransformsAreAppropriate(True)       # metre-level datum shifts are irrelevant here
         geoms = []
         for f in layer.getFeatures():
             g = QgsGeometry(f.geometry())
             g.transform(ct)
             geoms.append(g.makeValid())
-        if not geoms:
+        return (layer.name(), QgsGeometry.unaryUnion(geoms)) if geoms else None
+
+    def _browse_roi(self):
+        from qgis.PyQt.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose an ROI file", "", "Vector files (*.gpkg *.shp *.geojson *.json *.kml *.gml);;All files (*)")
+        if not path:
             return
-        geom = QgsGeometry.unaryUnion(geoms)
+        from pathlib import Path
+        lyr = QgsVectorLayer(path, Path(path).stem, "ogr")
+        roi = self._layer_roi(lyr) if lyr.isValid() else None
+        if roi is None:
+            self.status.setText(f"Could not read any geometry from {path}.")
+            return
+        self._file_roi = roi
+        self.roi_combo.setLayer(None)               # the file takes over from the map layer
+        self._refresh_roi_note()
+
+    def _current_roi(self):
+        """(name, geometry, source text): the picked map layer, else the chosen file, else Predict's last ROI."""
+        layer = self.roi_combo.currentLayer()
+        if layer is not None:
+            roi = self._layer_roi(layer)
+            return (roi + ("map layer",)) if roi else None
+        if self._file_roi:
+            return self._file_roi + ("file",)
+        from ..core import last_roi
+        last = last_roi.load()
+        return (last + ("Predict",)) if last else None
+
+    def _refresh_roi_note(self, *_):
+        """The combo's empty entry names the ROI in use (file or last Predict run), so it never looks blank."""
+        if self.roi_combo.currentLayer() is not None or getattr(self, "_in_refresh", False):
+            return
+        self._in_refresh = True
+        if self._file_roi:
+            text = f"{self._file_roi[0]}  (ROI file)"
+        else:
+            from ..core import last_roi
+            last = last_roi.load()
+            text = f"{last[0]}  (ROI from Predict)" if last else "No ROI yet: run Predict or press …"
+        try:
+            self.roi_combo.setAllowEmptyLayer(True, text)
+        except TypeError:                           # older QGIS: no custom text for the empty entry
+            pass
+        self.roi_combo.setLayer(None)
+        self._in_refresh = False
+
+    def open_for_last_roi(self):
+        """Use the ROI of the Predict run that just finished and list its passes."""
+        self.roi_combo.setLayer(None)
+        self._file_roi = None
+        self.compute_passes()
+
+    def showEvent(self, e):
+        self._refresh_roi_note()                    # Predict may have run since the dock was last shown
+        self.idle.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self.idle.stop()
+        super().hideEvent(e)
+
+    def compute_passes(self):
+        self._refresh_roi_note()
+        roi = self._current_roi()
+        if roi is None:
+            self.status.setText("No ROI: pick a layer, press … to choose a file, or run Predict overpasses first.")
+            return
+        if self.tles is None:
+            self._pending_passes = True
+            self._load_tles()
+            return
+        name, geom, _src = roi
         tz = resolve_tz(geom, "")
         self.ptable.setRowCount(0)
-        self.status.setText(f"Predicting passes for '{layer.name()}' ({tz}) …")
-        self._ptask = _PassTask(self, geom, layer.name(), tz)
+        self.status.setText(f"Predicting passes for '{name}' ({tz}) …")
+        self._ptask = _PassTask(self, geom, name, tz)
         QgsApplication.taskManager().addTask(self._ptask)
 
     def _on_passes(self, passes, tz, error):
@@ -230,18 +398,31 @@ class LiveTrackerDock(QgsDockWidget):
             self.status.setText(f"Prediction failed: {error}")
             return
         self.passes, self.tz = passes, tz
-        self.status.setText(f"⚠ {len(passes)} geometric imaging passes in the next 10 days ({tz}). Acquisition is not "
-                            "guaranteed — run Processing ▸ EO Overpass ▸ Predict overpasses with the ESA cross-check "
-                            "for Sentinel-2 confirmation.")
+        if not passes:
+            self.status.setText(f"No imaging passes in the next {WINDOW_DAYS} days ({tz}). The ROI may be very small, or the "
+                                "selected satellites do not cover it; run Predict overpasses with a longer window.")
+            self.update()
+            return
+        self.status.setText(f"⚠ {len(passes)} geometric imaging passes in the next {WINDOW_DAYS} days ({tz}). Sentinel-2 are "
+                            "checked against ESA's acquisition plans; Landsat is routine. Acquisition is never "
+                            "guaranteed and cloud is not forecast.")
         self.update()
 
     # ---------------------------------------------------------------------------------------------
+    def _alive(self, lyr):
+        try:    # layer removed by the user: the C++ object is gone and any call raises RuntimeError
+            return QgsProject.instance().mapLayer(lyr.id()) is not None
+        except RuntimeError:
+            return False
+
     def _ensure_layers(self):
         proj = QgsProject.instance()
-        alive = all(lyr is not None and proj.mapLayer(lyr.id()) is not None for lyr in self.layers.values()) \
-            if self.layers else False
-        if alive:
+        if self.layers and all(self._alive(lyr) for lyr in self.layers.values()):
             return
+        for lyr in self.layers.values():        # drop any survivors of a partly deleted set
+            if self._alive(lyr):
+                proj.removeMapLayer(lyr.id())
+        self._last_tracks = 0
         root = proj.layerTreeRoot()
         group = root.findGroup(GROUP) or root.insertGroup(0, GROUP)
 
@@ -285,13 +466,14 @@ class LiveTrackerDock(QgsDockWidget):
                 pal.setFormat(fmt)
                 lyr.setLabeling(QgsVectorLayerSimpleLabeling(pal))
                 lyr.setLabelsEnabled(True)
+            lyr.setCustomProperty("eo_live", True)
             proj.addMapLayer(lyr, False)
             group.addLayer(lyr)
             self.layers[key] = lyr
 
     def _set(self, key, feats):
         lyr = self.layers.get(key)
-        if lyr is None or QgsProject.instance().mapLayer(lyr.id()) is None:
+        if lyr is None or not self._alive(lyr):
             return
         pr = lyr.dataProvider()
         pr.truncate()
@@ -300,22 +482,29 @@ class LiveTrackerDock(QgsDockWidget):
         lyr.triggerRepaint()
 
     def _feat(self, lyr_key, sat, geom):
-        f = QgsFeature(self.layers[lyr_key].fields())
+        f = QgsFeature(self.layers[lyr_key].fields() if self._alive(self.layers[lyr_key]) else QgsFields())
         f.setAttributes([sat])
         f.setGeometry(geom)
         return f
 
     def update(self, force_tracks=False):
-        if not self.orbits or not self.layers:
+        if not self.orbits:
             return
+        live = self.btn_live.isChecked()
+        if live:
+            self._ensure_layers()               # recreate if the user deleted the live layers
+        draw = live or bool(self.layers)       # paused with no map layers: tables and clock only
         now = time.time()
         sel = [n for n in self.orbits if self.chk[n].isChecked()]
         sats, swaths, rows = [], [], []
         for n in sel:
             orb = self.orbits[n]
             la, lo, h = orb.subpoint(np.array([now, now + 2.0]))
-            sats.append(self._feat("sat", n, QgsGeometry.fromPointXY(QgsPointXY(lo[0], la[0]))))
+            if draw:
+                sats.append(self._feat("sat", n, QgsGeometry.fromPointXY(QgsPointXY(lo[0], la[0]))))
             rows.append((n, la[0], lo[0], h[0], "↑" if la[1] > la[0] else "↓"))
+            if not draw:
+                continue
             t = now + np.arange(-150, 151, 10.0)
             sla, slo, _ = orb.subpoint(t)
             az, _ = geod_inverse(slo[:-1], sla[:-1], slo[1:], sla[1:])
@@ -330,7 +519,7 @@ class LiveTrackerDock(QgsDockWidget):
                 swaths.append(self._feat("swath", n, QgsGeometry.fromPolygonXY([ring])))
         self._set("sat", sats)
         self._set("swath", swaths)
-        if force_tracks or now - self._last_tracks > 30:
+        if draw and (force_tracks or now - self._last_tracks > 30):
             past, fut = [], []
             for n in sel:
                 orb = self.orbits[n]
@@ -347,7 +536,12 @@ class LiveTrackerDock(QgsDockWidget):
 
         utc = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now))
         loc = to_local(now, self.tz)
-        self.clock.setText(f"UTC {utc}   |   {self.tz}  {loc:%H:%M:%S %Z}")
+        age_d = max((now - t["epoch_unix"]) / 86400 for t in self.tles.values()) if self.tles else 0
+        stale = age_d > 7                       # LEO TLE error grows quickly beyond about a week
+        self.clock.setText(f"UTC {utc}   |   {self.tz}  {loc:%H:%M:%S %Z}   |   TLEs up to {age_d:.1f} d old"
+                           + (" ⚠ stale, refresh" if stale else ""))
+        self.clock.setStyleSheet("font-family: Consolas, monospace; font-size: 12px"
+                                 + ("; color: #b26a00" if stale else ""))
         self.table.setRowCount(len(rows))
         for i, (n, la, lo, h, d) in enumerate(rows):
             for j, v in enumerate([n.title(), f"{la:+.2f}", f"{lo:+.2f}", f"{h:.0f}", d]):
@@ -355,7 +549,7 @@ class LiveTrackerDock(QgsDockWidget):
                 if j == 0:
                     it.setForeground(QColor(SATELLITES[n]["colour"]))
                 self.table.setItem(i, j, it)
-        up = [p for p in self.passes if p["roi_exit_utc"] >= now and p["satellite"] in sel][:12]
+        up = [p for p in self.passes if p["roi_exit_utc"] >= now and p["satellite"] in sel][:40]
         self.ptable.setRowCount(len(up))
         for i, p in enumerate(up):
             s = int(p["roi_entry_utc"] - now)
@@ -366,10 +560,30 @@ class LiveTrackerDock(QgsDockWidget):
                 hh, r = divmod(r, 3600)
                 cd = f"{d}d {hh:02d}h {r // 60:02d}m" if d else f"{hh:02d}:{r // 60:02d}:{r % 60:02d}"
             loc = to_local(p["overpass_utc"], p["timezone"])
-            for j, v in enumerate([p["satellite"].title(), cd, f"{loc:%a %d %b %H:%M:%S}", f"{p['roi_coverage_pct']:.0f}"]):
+            st = p.get("esa_plan_status") or ""
+            if p["satellite"].startswith("LANDSAT"):
+                plan, pc = "Landsat: routine", "#2e7d32"        # Landsat 8/9 image all land every pass
+            elif st.startswith("planned"):
+                plan, pc = "Planned (ESA)", "#2e7d32"
+            elif st == "not planned":
+                plan, pc = "Not planned (ESA)", "#c62828"
+            else:
+                plan, pc = "Plan unknown", "#666666"
+            age = p.get("tle_age_days")
+            aged = age is not None and age > 7      # same fresh/aged split as the website
+            tle = "" if age is None else f"{'aged' if aged else 'fresh'} · {age:.1f} d"
+            for j, v in enumerate([p["satellite"].title(), cd, f"{loc:%a %d %b %Y %H:%M} {loc.tzname()}",
+                                   time.strftime("%a %d %b %Y %H:%M UTC", time.gmtime(p["overpass_utc"])),
+                                   f"{p['roi_coverage_pct']:.0f}", (p.get("direction") or "").title(),
+                                   f"{p['view_angle_deg']:.1f}" if p.get("view_angle_deg") is not None else "",
+                                   plan, tle]):
                 it = QTableWidgetItem(v)
                 if j == 0:
                     it.setForeground(QColor(SATELLITES[p["satellite"]]["colour"]))
+                elif j == 7:
+                    it.setForeground(QColor(pc))
+                elif j == 8 and aged:
+                    it.setForeground(QColor("#b26a00"))
                 self.ptable.setItem(i, j, it)
 
     def closeEvent(self, e):

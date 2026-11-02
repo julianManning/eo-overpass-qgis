@@ -46,11 +46,30 @@ def _polygon(xs, ys) -> QgsGeometry:
     return QgsGeometry.fromPolygonXY([ring])
 
 
+def swath_strip(orbit, t_center: float, half_swath_km: float, length_km: float):
+    """Swath polygon (EPSG:4326) of the given along-track length centred on t_center, plus its nadir track."""
+    half_t = max(length_km, 20.0) / 2.0 / 6.75                      # ~6.75 km/s ground speed
+    n = int(min(max(2 * half_t / 4.0, 8), 600))
+    t = t_center + np.linspace(-half_t, half_t, n + 1)
+    lat, lon, _ = orbit.subpoint(t)
+    az, _ = geod_inverse(lon[:-1], lat[:-1], lon[1:], lat[1:])
+    az = np.append(az, az[-1])
+    llon, llat = geod_direct(lon, lat, az - 90.0, half_swath_km * 1000.0)
+    rlon, rlat = geod_direct(lon, lat, az + 90.0, half_swath_km * 1000.0)
+    px = np.concatenate([llon, rlon[::-1]])
+    py = np.concatenate([llat, rlat[::-1]])
+    tl = lon.copy()
+    if px.max() - px.min() > 180:
+        px = np.where(px < 0, px + 360.0, px)
+        tl = np.where(tl < 0, tl + 360.0, tl)
+    return _polygon(px, py).makeValid(), tl.tolist(), lat.tolist()
+
+
 def predict_overpasses(roi_geom: QgsGeometry, orbits: dict, tles: dict, start_unix: float, days: float,
                        satellites=None, tz_name: str = "UTC", roi_name: str = "ROI",
                        daytime_descending_only: bool = True, min_sun_elevation_deg: float = 0.0,
                        min_roi_coverage_pct: float = 0.0, coarse_step_s: float = 30.0,
-                       fine_step_s: float = 1.0, feedback=None) -> list:
+                       fine_step_s: float = 1.0, strip_length_km: float = 350.0, feedback=None) -> list:
     """
     Predict imaging overpasses of one ROI (EPSG:4326 polygon or point geometry).
 
@@ -154,13 +173,7 @@ def predict_overpasses(roi_geom: QgsGeometry, orbits: dict, tles: dict, start_un
             if daytime_descending_only and not expected:
                 continue
 
-            pad = int(round(20.0 / fine_step_s))
-            j0, j1 = max(i_in - pad, 0), min(i_out + pad, len(lat) - 1)
-            px = np.concatenate([llon[j0:j1 + 1], rlon[j0:j1 + 1][::-1]])
-            py = np.concatenate([llat[j0:j1 + 1], rlat[j0:j1 + 1][::-1]])
-            if px.max() - px.min() > 180:
-                px = np.where(px < 0, px + 360.0, px)
-            disp = _polygon(px, py).makeValid()
+            disp, trk_lon, trk_lat = swath_strip(orb, t_ca, half_km, strip_length_km)
 
             epoch = tles[name]["epoch_unix"]
             rows.append({
@@ -176,7 +189,8 @@ def predict_overpasses(roi_geom: QgsGeometry, orbits: dict, tles: dict, start_un
                 "tle_age_days": round((t_ca - epoch) / 86400.0, 1), "note": cat["note"],
                 "esa_plan_status": "", "esa_datatake_id": "", "esa_relative_orbit": None,
                 "anchor_lon": lon0, "anchor_lat": lat0, "geometry": disp,
-                "track_lon": lon[j0:j1 + 1:5].tolist(), "track_lat": lat[j0:j1 + 1:5].tolist(),
+                "track_lon": trk_lon, "track_lat": trk_lat, "swath_geometry": disp,
+                "strip_length_km": strip_length_km,
             })
         if feedback is not None:
             feedback.setProgress(100.0 * (k + 1) / len(names))

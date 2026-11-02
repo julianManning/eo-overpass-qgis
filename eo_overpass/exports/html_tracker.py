@@ -26,12 +26,15 @@ def export_tracker_html(path, tles: dict, roi_geom, roi_name: str, tz_name: str,
     payload = {
         "title": title or f"{roi_name} Overpass Tracker", "tz": tz_name, "roi_name": roi_name,
         "roi": json.loads(roi_geom.asJson(6)), "sats": sats, "passes": plist,
-        "generated": _iso(time.time()),
+        "generated": _iso(next((p["generated_utc"] for p in passes if p.get("generated_utc")), time.time())),
+        "valid_until": _iso(next((p["valid_until_utc"] for p in passes if p.get("valid_until_utc")),
+                                 time.time() + 3 * 86400)),
     }
     tpl = (_DATA / "live_tracker_template.html").read_text(encoding="utf-8")
     safe = lambda s: s.replace("</", "<\\/")
     html = (tpl.replace("__TITLE__", payload["title"])
             .replace("/*__PAYLOAD__*/null", safe(json.dumps(payload)))
+            .replace("/*__SATJS__*/", (_DATA / "satellite.min.js").read_text(encoding="utf-8").replace("</", "<\\/"))
             .replace("/*__LAND__*/null", (_DATA / "world_land_50m.json").read_text(encoding="utf-8")))
     if standalone:
         html = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">\n'

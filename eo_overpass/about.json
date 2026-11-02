@@ -1,0 +1,10 @@
+{
+  "_help": "Edit these values, then run: python scripts/set_release_info.py  (updates the About dialog, CITATION.cff and the user guide). Leave doi empty until Zenodo has minted one.",
+  "author": "Julian Manning",
+  "linkedin": "https://www.linkedin.com/in/julian-manning/",
+  "repository": "https://github.com/julianManning/eo-overpass-qgis",
+  "release_date": "2026-11-02",
+  "doi": "",
+  "notebook_repository": "https://github.com/julianManning/eo-overpass-predictor",
+  "notebook_doi": "10.5281/zenodo.23629976"
+}

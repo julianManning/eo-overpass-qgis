@@ -14,12 +14,9 @@ from ..core.compat import is_point_geometry
 from ..core.timezones import to_local
 from . import _paint as P
 
-BASEMAPS = {
-    "None": None,
-    "OpenStreetMap": "type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png&zmax=19&zmin=0",
-    "Esri World Imagery": "type=xyz&url=https://server.arcgisonline.com/ArcGIS/rest/services/"
-                          "World_Imagery/MapServer/tile/{z}/{y}/{x}&zmax=19&zmin=0",
-}
+from ..core.basemaps import SHEET_BASEMAPS, attribution, uri as basemap_uri
+
+BASEMAPS = {n: basemap_uri(n) for n in SHEET_BASEMAPS}      # offline land/sea → None
 WEB = QgsCoordinateReferenceSystem("EPSG:3857")
 WGS = QgsCoordinateReferenceSystem("EPSG:4326")
 
@@ -53,29 +50,47 @@ def _memory_layers(passes, roi_geom):
     return fp, roi
 
 
+def compact_products(s: str) -> str:
+    """'T55HBT T55HBU T55HCT' → '55H: BT BU CT'; Landsat path/rows unchanged."""
+    items = s.split()
+    if not items:
+        return "–"
+    if not items[0].startswith("T"):
+        return " ".join(items)
+    groups = {}
+    for t in items:
+        groups.setdefault(t[1:4], []).append(t[4:])
+    return " · ".join(f"{k}: {' '.join(v)}" for k, v in groups.items())
+
+
 def export_field_sheet_png(path, passes: list, roi_geom: QgsGeometry, roi_name: str, tz_name: str,
-                           max_passes: int = 8, basemap: str = "OpenStreetMap", tles: dict = None,
-                           width: int = 2480, height: int = 3508, dpi: int = 300):
+                           max_passes: int = 8, basemap: str = "Esri World Imagery", tles: dict = None,
+                           width: int = 2480, height: int = 3508, dpi: int = 300, target=None):
     """A4 portrait PNG (300 dpi): map of the next passes' swaths over the ROI, numbered to match the table."""
     sel = [p for p in passes if p["imaging_expected"]][:max_passes] or passes[:max_passes]
     u = width / 1000.0
-    img = P.new_image(width, height)
-    img.setDotsPerMeterX(int(dpi / 0.0254))
-    img.setDotsPerMeterY(int(dpi / 0.0254))
-    p = P.begin(img)
+    cv = P.Canvas(width, height, target, dpi)
+    p = cv.p
     m = 50 * u
 
     P.text(p, m, 40 * u, width - 2 * m, 40 * u, f"Overpass field sheet — {roi_name}", P.font(30 * u, P.BOLD))
     if sel:
         a = to_local(sel[0]["overpass_utc"], tz_name)
         b = to_local(sel[-1]["overpass_utc"], tz_name)
-        sub = f"Next {len(sel)} expected passes · {a:%d %b} – {b:%d %b %Y} · times in {tz_name} (local) and UTC"
+        produced, rerun, expired = P.validity(passes, tz_name)
+        sub = f"Next {len(sel)} expected passes · {a:%d %b} – {b:%d %b %Y} · local time ({tz_name}) and UTC"
+        stamp = (f"⚠ EXPIRED — valid until {rerun}. Re-run the prediction." if expired else
+                 f"⚠ Produced {produced} · RE-RUN BY {rerun}")
     else:
         sub = "No expected passes in the window"
-    P.text(p, m, 84 * u, width - 2 * m, 24 * u, sub, P.font(15 * u), P.MUTED)
+        produced, rerun, expired = P.validity(passes, tz_name)
+        stamp = f"⚠ Produced {produced} · RE-RUN BY {rerun}"
+    P.text(p, m, 80 * u, width - 2 * m, 22 * u, sub, P.font(14.5 * u), P.MUTED)
+    P.text(p, m, 101 * u, width - 2 * m, 22 * u, stamp, P.font(14 * u, P.BOLD),
+           QColor("#B42318") if expired else P.WARN_FG)
 
     # ---- map
-    map_top, map_h = 125 * u, 690 * u
+    map_top, map_h = 132 * u, 683 * u
     map_rect = QRectF(m, map_top, width - 2 * m, map_h)
     fp, roi = _memory_layers(sel, roi_geom)
     layers = [fp, roi]
@@ -83,12 +98,17 @@ def export_field_sheet_png(path, passes: list, roi_geom: QgsGeometry, roi_name: 
         bm = QgsRasterLayer(BASEMAPS[basemap], basemap, "wms")
         if bm.isValid():
             layers.append(bm)
+    # Natural Earth land/sea always sits underneath: it is the basemap when offline, or shows through
+    # wherever tiles fail to load.
+    from ..core.landmask import OCEAN, land_layer
+    c0 = roi_geom.centroid().asPoint()
+    layers.append(land_layer((c0.x() - 12, c0.y() - 10, c0.x() + 12, c0.y() + 10)))
     ms = QgsMapSettings()
     ms.setLayers(layers)
     ms.setDestinationCrs(WEB)
     ms.setOutputSize(QSize(int(map_rect.width()), int(map_rect.height())))
     ms.setOutputDpi(dpi)
-    ms.setBackgroundColor(QColor("#E9EEF0"))
+    ms.setBackgroundColor(QColor(OCEAN))
     ct = QgsCoordinateTransform(WGS, WEB, QgsProject.instance())
     a = roi_geom.centroid().asPoint()
     lat = max(-80.0, min(80.0, a.y()))
@@ -131,9 +151,11 @@ def export_field_sheet_png(path, passes: list, roi_geom: QgsGeometry, roi_name: 
         for (x1, y1), (x2, y2) in zip(pts[:-1], pts[1:]):
             p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
         target_y = map_rect.top() + map_rect.height() * (0.07 + 0.58 * (i - 0.5) / max(n, 1))
-        bx, by = min(pts, key=lambda q: abs(q[1] - target_y))
         r = 17 * u
-        bx = min(max(bx, map_rect.left() + r + 4 * u), map_rect.right() - r - 4 * u)
+        inside = [q for q in pts if map_rect.left() + r + 8 * u <= q[0] <= map_rect.right() - r - 8 * u
+                  and map_rect.top() + r <= q[1] <= map_rect.bottom() - r] or pts
+        bx, by = min(inside, key=lambda q: abs(q[1] - target_y))
+        bx = min(max(bx, map_rect.left() + r + 8 * u), map_rect.right() - r - 8 * u)
         p.setPen(QPen(P.PAPER, 3 * u))
         p.setBrush(QBrush(col))
         p.drawEllipse(QPointF(bx, by), r, r)
@@ -162,10 +184,11 @@ def export_field_sheet_png(path, passes: list, roi_geom: QgsGeometry, roi_name: 
     p.drawPolygon(QPolygonF([QPointF(nx, ny), QPointF(nx - 10 * u, ny + 30 * u), QPointF(nx + 10 * u, ny + 30 * u)]))
     P.text(p, nx - 20 * u, ny + 32 * u, 40 * u, 20 * u, "N", P.font(14 * u, P.BOLD), P.INK, P.ALIGN_HCENTER)
     # legend
-    lx, ly = map_rect.right() - 260 * u, map_rect.bottom() - 30 * u - 26 * u * (len(SATELLITES) + 1)
+    n_leg = len(SATELLITES) + 4
+    lx, ly = map_rect.right() - 300 * u, map_rect.bottom() - 30 * u - 26 * u * n_leg
     p.setPen(QPen(P.LINE, u))
     p.setBrush(QBrush(QColor(255, 255, 255, 230)))
-    p.drawRect(QRectF(lx - 12 * u, ly - 10 * u, 250 * u, 26 * u * (len(SATELLITES) + 1) + 14 * u))
+    p.drawRect(QRectF(lx - 12 * u, ly - 10 * u, 290 * u, 26 * u * n_leg + 14 * u))
     for i, (name, meta) in enumerate(SATELLITES.items()):
         col = QColor(meta["colour"])
         p.setPen(QPen(col, 2 * u))
@@ -177,12 +200,29 @@ def export_field_sheet_png(path, passes: list, roi_geom: QgsGeometry, roi_name: 
     p.setPen(QPen(QColor("#D7263D"), 2.5 * u))
     p.setBrush(QBrush(QColor(215, 38, 61, 40)))
     p.drawRect(QRectF(lx, yr + 4 * u, 30 * u, 16 * u))
-    P.text(p, lx + 40 * u, yr, 190 * u, 24 * u, f"ROI: {roi_name}", P.font(12.5 * u, P.DEMIBOLD))
+    P.text(p, lx + 40 * u, yr, 230 * u, 24 * u, f"ROI: {roi_name}", P.font(12.5 * u, P.DEMIBOLD))
+    yr += 26 * u
+    pen = QPen(P.INK, 2 * u)
+    pen.setStyle(P.DASH)
+    p.setPen(pen)
+    p.drawLine(QPointF(lx, yr + 12 * u), QPointF(lx + 30 * u, yr + 12 * u))
+    P.text(p, lx + 40 * u, yr, 240 * u, 24 * u, "Satellite ground track (nadir)", P.font(12.5 * u))
+    yr += 26 * u
+    p.setPen(QPen(P.INK, 2 * u))
+    p.setBrush(QBrush(QColor(23, 35, 43, 30)))
+    p.drawRect(QRectF(lx, yr + 4 * u, 30 * u, 16 * u))
+    P.text(p, lx + 40 * u, yr, 240 * u, 24 * u, "Imaged swath (solid edges)", P.font(12.5 * u))
+    yr += 26 * u
+    p.setPen(QPen(P.PAPER, 2 * u))
+    p.setBrush(QBrush(P.MUTED))
+    p.drawEllipse(QPointF(lx + 15 * u, yr + 12 * u), 11 * u, 11 * u)
+    P.text(p, lx + 4 * u, yr + 1 * u, 22 * u, 22 * u, "1", P.font(12 * u, P.BOLD), P.PAPER, P.ALIGN_CENTER)
+    P.text(p, lx + 40 * u, yr, 240 * u, 24 * u, "Pass number (see table)", P.font(12.5 * u))
 
     # ---- table
     y = map_top + map_h + 30 * u
-    cols = [("#", 40), ("Satellite", 150), ("Local date", 160), ("Local time", 175), ("UTC", 105),
-            ("ROI %", 75), ("View °", 75), ("Sun °", 70), ("ESA plan", 150)]
+    cols = [("#", 30), ("Satellite", 122), ("Local date", 150), ("Local time", 190), ("UTC", 88),
+            ("ROI %", 60), ("Orbit", 62), ("Product(s)", 175), ("ESA plan", 150)]
     scale = (width - 2 * m) / sum(w for _, w in cols)
     f_h, f_b = P.font(13.5 * u, P.BOLD), P.font(13.5 * u)
     rh = 36 * u
@@ -199,9 +239,12 @@ def export_field_sheet_png(path, passes: list, roi_geom: QgsGeometry, roi_name: 
         tout = to_local(ps["roi_exit_utc"], tz_name)
         ca = to_local(ps["overpass_utc"], tz_name)
         plan = ps.get("esa_plan_status") or ("n/a" if ps["mission"] == "Landsat" else "not checked")
+        ro = ps.get("relative_orbit")
+        orbit = (f"R{int(ro):03d}" if ps["mission"] == "Sentinel-2" else f"P{int(ro):03d}") if ro else "–"
+        prods = compact_products(ps.get("products") or "")
         vals = [str(i), ps["satellite"].title(), f"{ca:%a %d %b %Y}", f"{tin:%H:%M:%S}–{tout:%H:%M:%S} {ca.tzname()}",
                 time.strftime("%H:%M:%S", time.gmtime(ps["overpass_utc"])), f"{ps['roi_coverage_pct']:.0f}",
-                f"{ps['view_angle_deg']:.1f}", f"{ps['sun_elevation_deg']:.0f}", plan]
+                orbit, prods, plan]
         if i % 2 == 0:
             p.setPen(P.NO_PEN)
             p.setBrush(QBrush(QColor("#F7F9FA")))
@@ -209,7 +252,7 @@ def export_field_sheet_png(path, passes: list, roi_geom: QgsGeometry, roi_name: 
         x = m
         for j, ((name, w), v) in enumerate(zip(cols, vals)):
             colr = QColor(SATELLITES[ps["satellite"]]["colour"]) if j == 1 else P.INK
-            P.text(p, x + 8 * u, y, w * scale - 10 * u, rh, v, P.font(13.5 * u, P.DEMIBOLD) if j == 1 else f_b,
+            P.text(p, x + 8 * u, y, w * scale - 10 * u, rh, v, P.font(13.5 * u, P.DEMIBOLD) if j == 1 else (P.font(11.5 * u) if j in (7, 8) else f_b),
                    colr, P.ALIGN_LEFT | P.ALIGN_VCENTER)
             x += w * scale
         p.setPen(QPen(P.LINE, u))
@@ -217,13 +260,16 @@ def export_field_sheet_png(path, passes: list, roi_geom: QgsGeometry, roi_name: 
         y += rh
 
     y += 30 * u
-    P.caution_box(p, m, y, width - 2 * m, "Before you go to the field", P.FIELD_CAUTIONS, 14 * u)
-    foot = f"Generated {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}"
+    P.caution_box(p, m, y, width - 2 * m, "Before you go to the field", P.field_cautions(passes, tz_name), 14 * u)
+    P.badge(p, m, height - 52.5 * u, 29 * u)
+    P.text(p, m + 38 * u, height - 50 * u, width - 2 * m, 24 * u, "Page 1 · timeline p.2 · guide p.3+",
+           P.font(11.5 * u, P.DEMIBOLD), P.MUTED)
+    foot = ""                                       # produced / re-run-by is stated in the header and caution box
     if tles:
         oldest = max((time.time() - t["epoch_unix"]) / 86400 for t in tles.values())
-        foot += f" · oldest TLE {oldest:.1f} d"
-    foot += " · Basemap: " + (basemap if BASEMAPS.get(basemap) else "none") + " · EO Overpass Predictor (QGIS)"
+        foot += f"oldest TLE {oldest:.1f} d · "
+    foot += ("Basemap: " + (f"{basemap} ({attribution(basemap)})" if BASEMAPS.get(basemap)
+                               else "Natural Earth land/sea")
+             + " · EO Overpass Predictor (QGIS)")
     P.text(p, m, height - 50 * u, width - 2 * m, 24 * u, foot, P.font(11.5 * u), P.MUTED, P.ALIGN_RIGHT)
-    p.end()
-    img.save(str(path), "PNG")
-    return path
+    return cv.finish(path)

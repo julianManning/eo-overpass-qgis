@@ -91,6 +91,39 @@ def test_notebook_parity_port_phillip_bay():
     assert abs(s2c["roi_coverage_pct"] - 55.3) < 0.5
 
 
+def test_products_port_phillip_bay():
+    """Relative orbit / WRS-2 path-row and MGRS tile IDs attached to each pass."""
+    from eo_overpass.core.products import attribute_products
+    tles = _fixture_tles()
+    orbs = build_orbits(tles)
+    roi = QgsGeometry.fromWkt("POLYGON((144.35 -38.35,145.15 -38.35,145.15 -37.80,144.35 -37.80,144.35 -38.35))")
+    rows = predict_overpasses(roi, orbs, tles, _utc("2026-10-24T00:00:00Z"), 16, tz_name="Australia/Melbourne")
+    seen = {}
+    for r in rows:
+        attribute_products(r, orbs[r["satellite"]], roi)
+        seen.setdefault(r["satellite"][:2], set()).add(r["relative_orbit"])
+        if r["satellite"].startswith("SENTINEL"):
+            assert set(r["products"].split()) <= {"T55HBT", "T55HBU", "T55HCT", "T55HCU"}, r["products"]
+        else:
+            assert set(r["products"].split()) <= {"092/086", "092/087", "093/086", "093/087"}, r["products"]
+    assert seen["SE"] == {116, 73}, seen
+    assert seen["LA"] == {92, 93}, seen
+
+
+def test_mgrs_tile_names():
+    from eo_overpass.core.products import s2_tiles
+    for (lon, lat), tile in [((144.79, -37.85), "55HCU"), ((153.15, -27.38), "56JNQ")]:
+        ids = [t for t, _ in s2_tiles(QgsGeometry.fromWkt(f"POINT({lon} {lat})"))]
+        assert tile in ids, (tile, ids)
+
+
+def test_last_roi_roundtrip():
+    from eo_overpass.core import last_roi
+    last_roi.save("Site A", QgsGeometry.fromWkt("POLYGON((144 -38,145 -38,145 -37,144 -37,144 -38))"))
+    name, g = last_roi.load()
+    assert name == "Site A" and abs(g.area() - 1.0) < 1e-6
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

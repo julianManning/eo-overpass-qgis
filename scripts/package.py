@@ -1,4 +1,4 @@
-"""Build dist/eo_overpass.zip for 'Install from ZIP' or upload to plugins.qgis.org."""
+"""Build dist/eo_overpass_qgis.zip for 'Install from ZIP' or upload to plugins.qgis.org."""
 import pathlib
 import zipfile
 
@@ -6,7 +6,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = ROOT / "eo_overpass"
 DIST = ROOT / "dist"
 DIST.mkdir(exist_ok=True)
-out = DIST / "eo_overpass.zip"
+out = DIST / "eo_overpass_qgis.zip"
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     for p in sorted(SRC.rglob("*")):
         if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":

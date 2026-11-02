@@ -18,9 +18,17 @@ FIELD_SPEC = [
     ("nadir_offset_km", "float"), ("roi_side_of_track", "str"), ("edge_margin_km", "float"),
     ("view_angle_deg", "float"), ("max_elevation_deg", "float"), ("sun_elevation_deg", "float"),
     ("sat_altitude_km", "float"), ("tle_epoch_utc", "dt"), ("tle_age_days", "float"),
+    ("relative_orbit", "int"), ("products", "str"),
     ("esa_plan_status", "str"), ("esa_datatake_id", "str"), ("esa_relative_orbit", "int"), ("note", "str"),
+    ("generated_utc", "dt"), ("valid_until_utc", "dt"),
 ]
-_TIME_FIELDS = {"roi_entry_utc", "overpass_utc", "roi_exit_utc", "tle_epoch_utc"}
+# relative_orbit: Sentinel-2 relative orbit (R001–R143) or Landsat WRS-2 path
+PRODUCT_SPEC = [
+    ("roi_name", "str"), ("pass_no", "int"), ("satellite", "str"), ("overpass_utc", "dt"), ("local_date", "str"),
+    ("local_time", "str"), ("product", "str"), ("kind", "str"), ("relative_orbit", "int"), ("wrs_path", "int"),
+    ("wrs_row", "int"), ("valid_until_utc", "dt"),
+]
+_TIME_FIELDS = {"roi_entry_utc", "overpass_utc", "roi_exit_utc", "tle_epoch_utc", "generated_utc", "valid_until_utc"}
 
 
 def _qfield(name, kind):
@@ -41,6 +49,26 @@ def pass_fields() -> QgsFields:
     for name, kind in FIELD_SPEC:
         fields.append(_qfield(name, kind))
     return fields
+
+
+def product_fields() -> QgsFields:
+    fields = QgsFields()
+    for name, kind in PRODUCT_SPEC:
+        fields.append(_qfield(name, kind))
+    return fields
+
+
+def product_to_feature(prod: dict, ps: dict, pass_no: int, fields: QgsFields) -> QgsFeature:
+    f = QgsFeature(fields)
+    vals = {"roi_name": ps["roi_name"], "pass_no": pass_no, "satellite": ps["satellite"],
+            "overpass_utc": _utc_qdt(ps["overpass_utc"]), "local_date": ps.get("local_date"),
+            "local_time": ps.get("local_time"), "product": prod["product"], "kind": prod["kind"],
+            "relative_orbit": prod["relative_orbit"], "wrs_path": prod["wrs_path"], "wrs_row": prod["wrs_row"],
+            "valid_until_utc": _utc_qdt(ps["valid_until_utc"]) if ps.get("valid_until_utc") else None}
+    for k, v in vals.items():
+        f.setAttribute(k, v)
+    f.setGeometry(prod["geometry"])
+    return f
 
 
 def _utc_qdt(t_unix: float) -> QDateTime:
