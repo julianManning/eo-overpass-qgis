@@ -58,6 +58,10 @@ It is the QGIS companion to the notebook toolkit [eo-overpass-predictor](https:/
 | :---: | :---: |
 | ![Timeline](docs/img/timeline_example.png) | ![Live tracker](docs/img/live_tracker_dock.png) |
 
+| Standalone live tracker (HTML page in the field pack) |
+| :---: |
+| ![Live tracker web page](docs/img/live_tracker_web_example.png) |
+
 *Port Phillip Bay (Victoria), example run of 2 Nov 2026 with the Esri World Imagery basemap. The ESA cross-check was switched off for these example images, so the plan column reads "not checked".*
 
 ---
