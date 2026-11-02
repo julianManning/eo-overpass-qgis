@@ -7,7 +7,7 @@
       <br>
       <b>👤 Julian Manning</b>
       <br>
-      <sub>♻️ Last updated: <b>October 2026</b></sub>
+      <sub>♻️ Last updated: <b>November 2026</b></sub>
       <br>
       <sub>📝 <b>QGIS plugin · Landsat / Sentinel-2</b></sub>
       <br>
@@ -17,6 +17,8 @@
     </td>
   </tr>
 </table>
+
+[![DOI](https://zenodo.org/badge/1442759689.svg)](https://doi.org/10.5281/zenodo.23884833)
 
 **EO Overpass Predictor** for QGIS answers one question for field and GIS teams: **when will Landsat 8/9 or Sentinel-2A/B/C actually image my site?** It predicts every imaging overpass of your ROI layers from current orbits, using the true **instrument swath**, reports each pass in **UTC and the site's local time**, cross-checks Sentinel-2 against **ESA's acquisition plans**, and exports **printable field packs**: CSV, a live-tracker web page and PNG sheets you can take to the field. A **live tracker dock** shows the satellites moving over your own map.
 
