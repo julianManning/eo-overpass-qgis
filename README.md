@@ -92,7 +92,7 @@ It is the QGIS companion to the notebook toolkit [eo-overpass-predictor](https:/
 
 **From the QGIS plugin repository** (once published): *Plugins ▸ Manage and Install Plugins*, search **EO Overpass Predictor**.
 
-**From ZIP:** download `eo_overpass_qgis.zip` from the [Releases](https://github.com/julianManning/eo-overpass-qgis/releases) page, then *Plugins ▸ Manage and Install Plugins ▸ Install from ZIP*.
+**From ZIP:** download [`dist/eo_overpass_qgis.zip`](dist/eo_overpass_qgis.zip) from this repository (or from the [Releases](https://github.com/julianManning/eo-overpass-qgis/releases) page), then *Plugins ▸ Manage and Install Plugins ▸ Install from ZIP*.
 
 **From source:** copy the `eo_overpass` folder into your QGIS profile's `python/plugins` folder (on Windows `%APPDATA%\QGIS\QGIS3\profiles\default\python\plugins`) and enable it.
 
