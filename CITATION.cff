@@ -8,7 +8,7 @@ authors:
     email: julian.manning@outlook.com
     orcid: "https://orcid.org/0000-0003-4481-5474"
 doi: 10.5281/zenodo.23884833
-version: 1.0.3
+version: 1.0.4
 date-released: 2026-11-06
 license: GPL-2.0-or-later
 repository-code: "https://github.com/julianManning/eo-overpass-qgis"

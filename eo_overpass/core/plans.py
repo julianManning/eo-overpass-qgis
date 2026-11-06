@@ -93,7 +93,9 @@ def load_plans(source) -> list:
         if raw[:2] == b"PK":
             with zipfile.ZipFile(io.BytesIO(raw)) as z:
                 raw = z.read(next(n for n in z.namelist() if n.lower().endswith(".kml")))
-        root = ET.fromstring(raw)
+        if b"<!DOCTYPE" in raw[:4096].upper() or b"<!ENTITY" in raw[:4096].upper():
+            continue  # XML entity-expansion guard (Bandit B314): skip KML with DTD/entities
+        root = ET.fromstring(raw)  # nosec B314
         doc_name = next((el.text or "" for el in root.iter() if _strip(el.tag) == "name"), "")
         m = re.search(r"from\s+(\d{8}T\d{6})\s+to\s+(\d{8}T\d{6})", doc_name, re.I) or _PLAN_RE.search(f.name)
         p0, p1 = (_ts(m.groups()[-2]), _ts(m.groups()[-1])) if m else (None, None)

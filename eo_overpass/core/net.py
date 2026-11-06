@@ -2,6 +2,8 @@
 
 
 def http_get(url: str, timeout: int = 30) -> bytes:
+    if not url.lower().startswith(("http://", "https://")):
+        raise ValueError(f"unsupported URL scheme: {url}")
     try:
         from qgis.core import QgsBlockingNetworkRequest
         from qgis.PyQt.QtCore import QUrl
@@ -27,5 +29,5 @@ def http_get(url: str, timeout: int = 30) -> bytes:
         return bytes(reply.content())
 
     import urllib.request
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+    with urllib.request.urlopen(url, timeout=timeout) as r:  # nosec B310 (scheme checked above)
         return r.read()
