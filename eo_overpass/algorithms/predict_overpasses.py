@@ -271,7 +271,7 @@ class PredictOverpassesAlgorithm(QgsProcessingAlgorithm):
             plugin = plugins.get(__package__.split('.')[0]) if iface is not None else None
             if plugin is not None and hasattr(plugin, 'open_tracker'):
                 plugin.open_tracker()
-        except Exception:                                   # cosmetic only: never fail a finished run
+        except Exception:                                   # cosmetic only: never fail a finished run  # nosec B110
             pass
 
     def _show_summary(self):
@@ -291,7 +291,7 @@ class PredictOverpassesAlgorithm(QgsProcessingAlgorithm):
                 btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(pack)))
                 item.layout().addWidget(btn)
             iface.messageBar().pushWidget(item, duration=0)
-        except Exception:                                   # cosmetic only: never fail a finished run
+        except Exception:                                   # cosmetic only: never fail a finished run  # nosec B110
             pass
 
 

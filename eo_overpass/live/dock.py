@@ -86,10 +86,10 @@ class _PassTask(QgsTask):
                 from ..core.plans import crosscheck, fetch_plans, load_plans
                 try:
                     fetch_plans(plan_dir(), t0, t0 + WINDOW_DAYS * 86400, log=lambda m: None)
-                except Exception:
+                except Exception:  # nosec B110
                     pass
                 crosscheck(self.passes, load_plans(plan_dir()), self.geom)
-            except Exception:
+            except Exception:  # nosec B110
                 pass    # rows then show "—" for the plan column
             return True
         except Exception as exc:

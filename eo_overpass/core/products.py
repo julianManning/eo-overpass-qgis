@@ -112,7 +112,7 @@ def s2_tiles(geom4326: QgsGeometry) -> list:
             g = QgsGeometry(geom4326)
             try:
                 g.transform(fwd)
-            except Exception:
+            except Exception:  # nosec B112
                 continue
             gb = g.boundingBox()
             e0 = int(gb.xMinimum() // 100000) * 100000 - 100000
