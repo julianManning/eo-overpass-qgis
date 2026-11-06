@@ -4,7 +4,7 @@ import calendar
 import re
 import zipfile
 import io
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405 (KML with DTD/entities is skipped before parsing)
 from datetime import datetime
 from pathlib import Path
 
